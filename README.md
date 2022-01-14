@@ -1,4 +1,4 @@
-Gauss-Spotufy-2022
+Gauss-Spotify-2022
 ==============================
 
 12. Classification of music by genre with respect to their text (data can be scraped from Genius / Spotify / others). [ADVANCED]
