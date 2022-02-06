@@ -110,3 +110,31 @@ def create_dataset(genres_types: List[str],
         df.to_csv(path_to_save)
 
     return df
+
+
+def read_main_df(path: str,
+                 drop_columns: Optional[List[str]]=None,
+                 unstructured_columns: Optional[List[str]]=None) -> pd.DataFrame:
+    """
+    Function read main data frame and performs basic data type formatting
+
+    Args:
+        path: path to csv file with data set
+        drop_columns: list of unnecessary columns to remove
+        unstructured_columns: list of columns which may contains not valid data structures for pandas
+                            like lists or dictionaries
+
+    Returns:
+        df: ready data set
+    """
+    # Importing csv file
+    df = pd.read_csv(path)
+
+    # Drop unused columns
+    df.drop(drop_columns, axis=1, inplace=True)
+
+    # Converting columns with lists/dicts to usable structure
+    for column in unstructured_columns:
+        df[column] = df[column].apply(eval)
+
+    return df
