@@ -1,19 +1,20 @@
 from typing import Optional, Dict, Tuple, List
+from time import time
 import pandas as pd
 import numpy as np
-import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import cross_validate
-
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.model_selection import cross_validate, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, FunctionTransformer
+from sklearn.pipeline import Pipeline
 
 def find_optimal_tfidf_params(X, y,
                               param_grid: Dict[str, List],
                               models: Dict[str, object],
-                              cv_kwargs: Optional[Dict]=None,
-                              random_state: Optional[int]=7,
-                              path: Optional[str]=None,
-                              warm_start: Optional[List]=None,
-                              verbose: Optional[bool]=False) -> pd.DataFrame:
+                              cv_kwargs: Optional[Dict] = None,
+                              random_state: Optional[int] = 7,
+                              path: Optional[str] = None,
+                              warm_start: Optional[List] = None,
+                              verbose: Optional[bool] = False) -> pd.DataFrame:
     """
     Function performs grid search across Tfidf parameters from param_grid with input data X and
     output data y. Processed data is evaluated on models from `models` dict.
@@ -118,8 +119,8 @@ def _create_results() -> pd.DataFrame:
 
 def cv_to_dataframe(cv: Dict,
                     name: str,
-                    max_features: Optional[int]=None,
-                    ngram_range: Optional[Tuple[int, int]]=None) -> pd.DataFrame:
+                    max_features: Optional[int] = None,
+                    ngram_range: Optional[Tuple[int, int]] = None) -> pd.DataFrame:
     """
     Function returns dataframe with one row of solution from cross validation
 
@@ -177,3 +178,147 @@ def _read_results(path: str) -> pd.DataFrame:
     for column in results.columns[3:]:
         results[column] = results[column].apply(eval)
     return results
+
+
+def search_preprocessors(model, df: pd.DataFrame, y,
+                         text_columns: List[str],
+                         tfidf_params: Dict[str, List],
+                         bow_params: Dict[str, List],
+                         scalers: Optional[List]=[None],
+                         cv_kwargs: Optional[Dict]=None,
+                         random_state: Optional[int]=None,
+                         path: Optional[str]=None,
+                         verbose: Optional[bool]=None) -> pd.DataFrame:
+    """
+    Function performs experiment to search over best preprocessing pipeline for given problem.
+    The proposed text preprocessors are Tfidf and Bag of Words methods. We can inspect different types
+    of scaling results.
+
+    Args:
+        model: Main model to evaluate results
+        df: Input values. It should contain columns from `text_columns` list
+        y: Output values. May be before encoding. Label encoding will be carry out regardless of y's dtype
+        text_columns: list of columns with tokens or text send further to preprocessors
+        tfidf_params: Param grid of TfIdf preprocessor
+        bow_params: Param grid of Bag of Word preprocessor
+        scalers: List of scalers used in experiment. If None then no scaling method will be used
+        cv_kwargs: Additional arguments of GridSearchCV method
+        random_state: initial random state
+        path: path to saving results
+        verbose: if true then short raport will be printed after each iteration of algorithm
+
+    Returns:
+
+    """
+    # Setting the random state
+    if random_state:
+        np.random.seed(random_state)
+    # Defining metrics to evaluate
+    scoring = ['accuracy', 'recall_weighted', 'precision_weighted', 'f1_weighted']
+
+    # Altering the keys of tfidf and bow dictionaries
+    # We define further sklearn Pipeline which needs a refer of parameters to specific objects
+    tfidf_params = {'preprocessor__' + k: v for k, v in tfidf_params.items()}
+    bow_params = {'preprocessor__' + k: v for k, v in bow_params.items()}
+
+    # Encoding output
+    le = LabelEncoder()
+    y = le.fit_transform(y.copy())
+
+    # If we want a raport after iterations
+    if verbose:
+        # Initializing iteration parameters
+        # Number of iteration is number of scalres * number of columns on which we train
+        # And times 2 because of Tfidf and Bag of words
+        max_iter = len(scalers) * len(text_columns) * 2
+        iteration = 0
+        print(f'Iteration {0}/{max_iter}')
+
+    # Iterating over usefull columns
+    for column in text_columns:
+        # Preprocessing input if column caontains lists instead of text
+        if isinstance(df[column][0], list):
+            # Joining list of words to a plain text
+            X = df.copy()[column].apply(lambda x: ' '.join(x))
+
+        # Avaible preprocessors
+        preprocessors = [TfidfVectorizer(), CountVectorizer()]
+        # Avaible preprocessors keyword args
+        preprocessors_kwargs = [tfidf_params, bow_params]
+
+        # Iterating over preprocessors and corresponding args
+        for prep, prep_kwargs in zip(preprocessors, preprocessors_kwargs):
+            # Saving name of preprocessor
+            prep_name = type(prep).__name__
+            # Iterating over avaible scalers
+            for scaler in scalers:
+                # Saving current scaler name
+                scaler_name = type(scaler).__name__
+                # If there is no scaler then we alter a bit pipeline
+                if not scaler:
+                    pipeline = Pipeline([('preprocessor', prep),
+                                         ('to_dense', FunctionTransformer(lambda x: x.toarray())),
+                                         ('model', model)])
+                # If we scale the data then we need to add scaler step in pipeline
+                else:
+                    pipeline = Pipeline([('preprocessor', prep),
+                                         ('to_dense', FunctionTransformer(lambda x: x.toarray())),
+                                         ('scaler', scaler),
+                                         ('model', model)])
+                # Measuring time of grid search
+                t = time()
+                # Defining and compiling grid search on given set of parameters
+                # We pass there additional parameters from cv_kwargs dict
+                grid_search = GridSearchCV(pipeline, prep_kwargs, scoring=scoring, **cv_kwargs)
+                grid_search.fit(X, y)
+                # Preprocessing result to more usable form
+                temp = _reading_grid_search_results(column, prep_name, scaler_name,
+                                                    grid_search.cv_results_)
+                # If the result data frame already exists then just append current results
+                # If the error occurs then it means it is first iteration and we need to define results
+                try:
+                    results = results.append(temp, ignore_index=True)
+                except:
+                    results = temp
+                # If we specified path to save results then we save the progress of experiment
+                if path:
+                    results.to_csv(path, index=False)
+                # Raport after end of iteration
+                if verbose:
+                    iteration += 1
+                    t2 = (time() - t)
+                    print(f'Iteration {iteration}/{max_iter}. Time: {t2 / 60: .2f} min')
+    # Saving results
+    if path:
+        results.to_csv(path, index=False)
+    return results
+
+
+def _reading_grid_search_results(col_name: str,
+                                 prep_name: str,
+                                 scaler_name: str,
+                                 cv_results: Dict,
+                                 scoring: Optional[List[str]]=['accuracy', 'recall_weighted',
+                                                               'precision_weighted', 'f1_weighted']) -> pd.DataFrame:
+
+    # Poping params of each grid search iteration
+    params = cv_results['params']
+    # Number of each combination
+    n_combinations = len(params)
+    # We create lists of column, preprocessors and scalers names used for given grid search
+    col_names = [col_name for _ in range(n_combinations)]
+    prep_names = [prep_name for _ in range(n_combinations)]
+    scaler_names = [scaler_name for _ in range(n_combinations)]
+    # List of mean scores of each metric in the order as `params` was evaluated
+    scores = [list(np.round(cv_results[f'mean_test_{metric}'], 2))
+              for metric in scoring]
+    # Creating initial data frame
+    dict_result = {'On Column': col_names,
+                   'Preprocessor': prep_names,
+                   'Scaler': scaler_names,
+                   'Params': params}
+    # Appending metric columns to dataframe
+    for metric, result in zip(scoring, scores):
+        # column names are capitalized and without anuthing after _ char
+        dict_result[metric.split('_')[0].capitalize()] = result
+    return pd.DataFrame(dict_result)
